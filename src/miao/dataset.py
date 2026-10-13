@@ -1524,7 +1524,7 @@ class VolumeDataset(torch.utils.data.Dataset):
                     lbl_spatial_shape = tuple(int(s) for s in lbl.shape)
                 if lbl_spatial_shape != target_size:
                     lbl_t = torch.from_numpy(lbl).float().unsqueeze(0).unsqueeze(0)
-                    lbl_t = F.interpolate(lbl_t, size=target_size, mode="nearest").squeeze(0).squeeze(0)
+                    lbl_t = F.interpolate(lbl_t, size=target_size, mode="nearest-exact").squeeze(0).squeeze(0)
                     lbl = lbl_t.numpy().astype(vol_info.label_np_dtype)
                 label_crops.append(lbl)
 
