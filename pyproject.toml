@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "miao-io"
 # Fork version: upstream base + fork revision N; bump N with every merge into this fork's master.
-version = "0.4.2+fork.1"
+version = "0.4.2+fork.2"
 description = "Scalable PyTorch data loaders for OME-NGFF zarr datasets"
 requires-python = ">=3.10"
 dependencies = [
