@@ -130,6 +130,10 @@ class VolumeConfig(BaseModel):
     # Optional per-volume override of the global MiaoConfig.resolution_sampling.
     resolution_sampling: Optional[ResolutionSampling] = None
     zarr_version: Literal["zarr2", "zarr3"] = "zarr2"
+    # A store that is not OME-NGFF zarr: "n5", or "precomputed" (Neuroglancer). `path` + `image_key`
+    # (and `label_key`) then name an N5 multiscale group or a precomputed volume directory; see
+    # miao.formats for where their voxel sizes come from. Unset, the store is zarr (zarr_version).
+    format: Optional[Literal["n5", "precomputed"]] = None
     # Divides the voxel sizes read from the zarr's OME coordinateTransformations. Applied to the image and label pyramids
     # alike, before any level selection or resampling. Leave at 1.0 for unexpanded data.
     exp_factor: float = 1.0
@@ -202,6 +206,20 @@ class VolumeConfig(BaseModel):
         if v <= 0:
             raise ValueError(f"exp_factor must be positive, got {v}")
         return v
+
+    @property
+    def store_format(self) -> str:
+        """How the store is read: "zarr2" / "zarr3" (zarr_version), or `format` when set."""
+        return self.format or self.zarr_version
+
+    @model_validator(mode="after")
+    def validate_format(self) -> "VolumeConfig":
+        if self.format is not None and "zarr_version" in self.model_fields_set:
+            raise ValueError(
+                f"Volume {self.name!r}: zarr_version applies to zarr stores only, and this "
+                f"volume is format {self.format!r}"
+            )
+        return self
 
     @model_validator(mode="after")
     def validate_label_fill(self) -> "VolumeConfig":
