@@ -141,6 +141,34 @@ Both are assumed to be built by block averaging, so level k's translation is hal
 between its voxel size and level 0's, plus its offset: the per-level convention most OME-NGFF
 pyramids record.
 
+#### Reading from a bucket
+
+For these two formats `path` may be a URL that tensorstore opens itself: `gs://bucket/dir`,
+`s3://bucket/dir`, `https://host/dir` or `file:///dir`. A volume is then read straight from the
+bucket, and one config can mix such volumes with local ones:
+
+```yaml
+volumes:
+  - name: optic_lobe                 # local
+    path: /nrs/flyem/optic-lobe
+    image_key: optic-lobe-grayscale
+    format: precomputed
+  - name: male_cns                   # in a public bucket
+    path: gs://flyem-male-cns
+    image_key: em/em-clahe-jpeg
+    label_key: v1.0/segmentation
+    format: precomputed
+```
+
+- A public bucket is read without credentials.
+- Nothing is written to disk. A window is downloaded each time it is read; `cache_bytes` of it
+  stay in each worker's memory.
+- A URL has no directory to list, so the levels of an N5 group are found by asking for `s0`, `s1`,
+  ... in turn. Behind a URL a pyramid must start at `s0` or `s1` and have no gaps.
+- OME-NGFF zarr is read from local paths only.
+- For a public S3 bucket, `https://<bucket>.s3.amazonaws.com/dir` opens faster than
+  `s3://<bucket>/dir`, which first looks for AWS credentials.
+
 ### Random resolution sampling
 
 To train resolution-agnostic models, let each sample draw its own scales. Set
@@ -482,7 +510,7 @@ dimensions are picked up automatically when present. Unknown keys are rejected, 
 | Field | Default | Description |
 |---|---|---|
 | `name` | — | Unique name for the volume |
-| `path` | — | Path to the OME-NGFF zarr container (an N5 container, or the directory holding precomputed volumes) |
+| `path` | — | Path to the OME-NGFF zarr container (an N5 container, or the directory holding precomputed volumes). For N5 and precomputed it may be a URL — see [Reading from a bucket](#reading-from-a-bucket) |
 | `image_key` | — | Group key within the zarr for image data |
 | `label_key` | `None` | Optional group key for labels in the same zarr |
 | `label_fill` | `None` | Set this (e.g. `-1`) to sample patches larger than the label array: the image is read around the labels, and label voxels outside the label array take this value. The patch center always lies inside the label array, and `bounding_box` still confines the read.  When unset (default), every patch must fit inside the label array |

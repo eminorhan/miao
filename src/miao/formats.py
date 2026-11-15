@@ -23,6 +23,12 @@ channel. A volume is the directory holding the `info` file; its levels are named
 Both formats come from pyramids built by block averaging, whose downsampled voxel centres sit half a
 voxel in from level 0's, so level k's translation is (voxel_k - voxel_0) / 2, plus its offset. That
 is the convention most lmd-v0.0.1 zarr stores record per level.
+
+**URLs.** For these two formats a volume's `path` may be a URL that tensorstore opens as a key-value
+store (`gs://bucket/dir`, `s3://bucket/dir`, `https://host/dir`, `file:///dir`) instead of a local
+path. The metadata files are then read through tensorstore too. A URL has no directory to list, so
+an N5 group's levels are found by asking for `s0`, `s1`, ... in turn: behind a URL a pyramid must
+start at `s0` or `s1` and have no gaps. OME-NGFF zarr is read from local paths only.
 """
 
 from __future__ import annotations
@@ -32,7 +38,9 @@ import re
 from pathlib import Path
 
 import numpy as np
+import tensorstore as ts
 
+from miao.store import is_url, join_path
 from miao.zarr_meta import OmeMetadata, ScaleMetadata, StoreFormat, read_ome_metadata
 
 _NM_PER_UNIT = {"nm": 1.0, "nanometer": 1.0, "nanometers": 1.0,
@@ -47,6 +55,10 @@ def read_metadata(
 ) -> OmeMetadata:
     """Pyramid metadata for the multiscale group (N5) or volume (precomputed) at path/group_key."""
     if store_format in ("zarr2", "zarr3"):
+        if is_url(path):
+            raise ValueError(
+                f"{path}: a URL path is read for `format: n5` and `format: precomputed` only; "
+                "an OME-NGFF zarr store must be a local path")
         return read_ome_metadata(path, group_key, store_format, requested_scales)
     if store_format == "n5":
         return read_n5_metadata(path, group_key, requested_scales)
@@ -55,7 +67,13 @@ def read_metadata(
     raise ValueError(f"Unknown store format {store_format!r}")
 
 
-def _json(path: Path) -> dict:
+def _json(path: str | Path) -> dict:
+    """The JSON file at a local path or a URL; {} when there is no such file."""
+    if is_url(path):
+        directory, _, name = path.rpartition("/")
+        found = ts.KvStore.open(directory + "/").result().read(name).result()
+        return json.loads(found.value) if found.state == "value" else {}
+    path = Path(path)
     return json.loads(path.read_text()) if path.is_file() else {}
 
 
@@ -64,7 +82,7 @@ def _space_axes(names: list[str]) -> list[dict]:
             else {"name": n, "type": "space", "unit": "nanometer"} for n in names]
 
 
-def _select(levels: list, requested: list[int] | None, where: Path) -> list[int]:
+def _select(levels: list, requested: list[int] | None, where: str | Path) -> list[int]:
     if requested is None:
         return list(range(len(levels)))
     for i in requested:
@@ -76,7 +94,7 @@ def _select(levels: list, requested: list[int] | None, where: Path) -> list[int]
 # --- N5 ------------------------------------------------------------------------------------------
 
 
-def _resolution_nm(value, where: Path) -> list[float] | None:
+def _resolution_nm(value, where: str | Path) -> list[float] | None:
     """A `pixelResolution` ({"dimensions": [...], "unit": ...}) or a `resolution` ([...]) in nm."""
     if value is None:
         return None
@@ -88,14 +106,25 @@ def _resolution_nm(value, where: Path) -> list[float] | None:
     return [float(v) for v in value]
 
 
-def _n5_levels(group: Path) -> list[tuple[int | None, str, dict]]:
+def _n5_levels(group: str | Path) -> list[tuple[int | None, str, dict]]:
     """(level number, dataset path, attributes) per level, finest first: the group's s0, s1, ...
     datasets, or the group itself when it is an array (number None, path "")."""
-    own = _json(group / "attributes.json")
+    own = _json(join_path(group, "attributes.json"))
     if "dimensions" in own:
         return [(None, "", own)]
     found = []
-    if group.is_dir():
+    if is_url(group):
+        # A URL has no directory to list: ask for s0, s1, ... and stop at the first one missing
+        # after the pyramid's start (s0, or s1 when s0 was never written).
+        n = 0
+        while True:
+            attrs = _json(join_path(group, f"s{n}", "attributes.json"))
+            if "dimensions" in attrs:
+                found.append((n, f"s{n}", attrs))
+            elif found or n > 0:
+                break
+            n += 1
+    elif group.is_dir():
         for child in group.iterdir():
             m = re.fullmatch(r"s(\d+)", child.name)
             attrs = _json(child / "attributes.json") if m else {}
@@ -107,7 +136,7 @@ def _n5_levels(group: Path) -> list[tuple[int | None, str, dict]]:
 
 
 def _n5_voxel_sizes(
-    group_attrs: dict, levels: list, where: Path
+    group_attrs: dict, levels: list, where: str | Path
 ) -> tuple[list[list[float]], list[float]]:
     """Each level's voxel size in nm, and the base (level-0) voxel size the pyramid is built on."""
     scales = group_attrs.get("scales")
@@ -135,16 +164,17 @@ def _n5_voxel_sizes(
             voxel = [b * x for b, x in zip(base, f)]
             if own is not None and not np.allclose(own, voxel, rtol=1e-6):
                 raise ValueError(
-                    f"{where / name}: resolution {own} disagrees with the base voxel size {base} "
-                    f"times its downsampling factors {f}")
+                    f"{join_path(where, name)}: resolution {own} disagrees with the base voxel "
+                    f"size {base} times its downsampling factors {f}")
         elif own is not None:
             voxel = own
         elif base is not None and n in (0, None):
             voxel = base
         else:
             raise ValueError(
-                f"{where / name}: no voxel size. Expected `resolution`, or `pixelResolution` / "
-                "`resolution` on the group with `downsamplingFactors` (or the group's `scales`).")
+                f"{join_path(where, name)}: no voxel size. Expected `resolution`, or "
+                "`pixelResolution` / `resolution` on the group with `downsamplingFactors` (or the "
+                "group's `scales`).")
         sizes.append(voxel)
     return sizes, (base if base is not None else sizes[0])
 
@@ -153,9 +183,9 @@ def read_n5_metadata(
     path: str | Path, group_key: str, requested_scales: list[int] | None = None
 ) -> OmeMetadata:
     """Pyramid metadata for an N5 multiscale group (or single dataset) at path/group_key."""
-    group = Path(path) / group_key
+    group = join_path(path, group_key)
     levels = _n5_levels(group)
-    group_attrs = {} if levels[0][0] is None else _json(group / "attributes.json")
+    group_attrs = {} if levels[0][0] is None else _json(join_path(group, "attributes.json"))
     sizes, base = _n5_voxel_sizes(group_attrs, levels, group)
 
     ndim = len(levels[0][2]["dimensions"])
@@ -169,7 +199,8 @@ def read_n5_metadata(
         _, name, attrs = levels[i]
         offset = attrs.get("offset")
         if offset is not None and any(float(o) != 0 for o in offset):
-            raise ValueError(f"{group / name}: non-zero `offset` {offset} is not supported")
+            raise ValueError(
+                f"{join_path(group, name)}: non-zero `offset` {offset} is not supported")
         scales[i] = ScaleMetadata(
             path=name,
             scale_factors=sizes[i],
@@ -196,8 +227,8 @@ def read_precomputed_metadata(
 ) -> OmeMetadata:
     """Pyramid metadata for the Neuroglancer precomputed volume (an `info` directory) at
     path/group_key."""
-    volume = Path(path) / group_key
-    info = _json(volume / "info")
+    volume = join_path(path, group_key)
+    info = _json(join_path(volume, "info"))
     if "scales" not in info:
         raise ValueError(f"No Neuroglancer precomputed `info` with scales at {volume}")
     levels = sorted(info["scales"], key=lambda s: float(np.prod(s["resolution"])))

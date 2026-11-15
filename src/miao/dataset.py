@@ -5,7 +5,6 @@ from __future__ import annotations
 import importlib
 import warnings
 from dataclasses import dataclass, replace
-from pathlib import Path
 
 import numpy as np
 import tensorstore as ts
@@ -21,7 +20,7 @@ from miao.axes import (
 )
 from miao.config import AugmentFnConfig, MiaoConfig, ResolutionSampling, VolumeConfig
 from miao.formats import read_metadata
-from miao.store import create_context, open_store
+from miao.store import create_context, join_path, open_store
 from miao.zarr_meta import OmeMetadata, fix_axes
 
 
@@ -1164,7 +1163,7 @@ class VolumeDataset(torch.utils.data.Dataset):
             stores: dict = {}
             for vol_info in self._volumes:
                 vol_name = vol_info.config.name
-                zarr_path = Path(vol_info.config.path)
+                zarr_path = vol_info.config.path  # a local path or a URL (miao.store.is_url)
                 store_fmt = vol_info.config.store_format
                 stores[vol_name] = {"img": {}, "label": {}}
 
@@ -1186,10 +1185,10 @@ class VolumeDataset(torch.utils.data.Dataset):
                     )
 
                 for level in img_levels:
-                    img_array_path = (
-                        zarr_path
-                        / vol_info.config.image_key
-                        / vol_info.image_meta.scales[level].path
+                    img_array_path = join_path(
+                        zarr_path,
+                        vol_info.config.image_key,
+                        vol_info.image_meta.scales[level].path,
                     )
                     stores[vol_name]["img"][level] = open_store(
                         img_array_path, store_fmt, ctx,
@@ -1198,10 +1197,10 @@ class VolumeDataset(torch.utils.data.Dataset):
 
                 if vol_info.config.label_key and vol_info.label_meta:
                     for level in lbl_levels:
-                        lbl_array_path = (
-                            zarr_path
-                            / vol_info.config.label_key
-                            / vol_info.label_meta.scales[level].path
+                        lbl_array_path = join_path(
+                            zarr_path,
+                            vol_info.config.label_key,
+                            vol_info.label_meta.scales[level].path,
                         )
                         stores[vol_name]["label"][level] = open_store(
                             lbl_array_path, store_fmt, ctx,

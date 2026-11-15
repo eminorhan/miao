@@ -133,6 +133,7 @@ class VolumeConfig(BaseModel):
     # A store that is not OME-NGFF zarr: "n5", or "precomputed" (Neuroglancer). `path` + `image_key`
     # (and `label_key`) then name an N5 multiscale group or a precomputed volume directory; see
     # miao.formats for where their voxel sizes come from. Unset, the store is zarr (zarr_version).
+    # For these two formats `path` may be a URL such as gs://bucket/dir instead of a local path.
     format: Optional[Literal["n5", "precomputed"]] = None
     # Divides the voxel sizes read from the zarr's OME coordinateTransformations. Applied to the image and label pyramids
     # alike, before any level selection or resampling. Leave at 1.0 for unexpanded data.

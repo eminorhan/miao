@@ -20,7 +20,7 @@ from conftest import _create_ome_ngff_zarr2
 from miao.config import MiaoConfig, VolumeConfig
 from miao.dataset import VolumeDataset
 from miao.formats import read_metadata
-from miao.store import open_store
+from miao.store import is_url, join_path, open_store
 
 SHAPE = (64, 64, 48)  # level 0, x y z
 VOXEL = [8.0, 8.0, 8.0]  # nm
@@ -266,6 +266,92 @@ def test_precomputed_channels_are_pinned_with_fixed_axes(tmp_path):
         _dataset({k: v for k, v in ref.items() if k != "label_key"}, **settings),
         _dataset({**image_only, "fixed_axes": {"c": 1}}, **settings),
     )
+
+
+# --- URL paths ------------------------------------------------------------------------------------
+
+
+def _url(entry: dict) -> dict:
+    """The same store named by a `file://` URL. It is read through tensorstore's key-value stores,
+    the way a `gs://` or `https://` path is, and needs no network."""
+    return {**entry, "path": Path(entry["path"]).as_uri()}
+
+
+def test_urls_and_local_paths_are_told_apart():
+    for url in ("gs://bucket/dir", "s3://bucket", "https://host/dir/", "file:///dir"):
+        assert is_url(url)
+    for local in ("/nrs/lab/volume.n5", "relative/dir", "C:/dir", Path("/nrs/lab")):
+        assert not is_url(local)
+    assert join_path("gs://bucket/dir/", "", "s0") == "gs://bucket/dir/s0"
+    assert join_path("gs://bucket", "em/jpeg", "8x8x8") == "gs://bucket/em/jpeg/8x8x8"
+    assert join_path("/nrs/lab", "", "s0") == Path("/nrs/lab/s0")
+    assert join_path("/nrs/lab", "raw", "") == Path("/nrs/lab/raw")
+
+
+@pytest.mark.parametrize("copy", COPIES)
+@pytest.mark.parametrize("key", ["image_key", "label_key"])
+def test_url_levels_match_local(stores, copy, key):
+    assert _meta(_url(stores[copy]), key) == _meta(stores[copy], key)
+
+
+@pytest.mark.parametrize("copy", COPIES)
+@pytest.mark.parametrize("settings", [
+    {"resolutions": [[8, 8, 8]]},
+    {"resolutions": [[8, 8, 8], [16, 16, 16]]},
+    {"resolution_sampling": {"ranges": [[[8], [32]]], "n_scales": 1}},
+], ids=["8nm", "ladder", "sampled"])
+def test_url_patches_match_local(stores, copy, settings):
+    _assert_same_patches(_dataset(stores[copy], **settings),
+                         _dataset(_url(stores[copy]), **settings))
+
+
+def test_local_and_url_volumes_mix_in_one_dataset(stores):
+    """One config with a local volume and a volume behind a URL samples both."""
+    ds = _dataset(stores["precomputed"], resolutions=[[8, 8, 8]])
+    mixed = VolumeDataset(MiaoConfig(
+        volumes=[{"name": "local", **stores["precomputed"]},
+                 {"name": "url", **_url(stores["n5-scales"])}],
+        resolutions=[[8, 8, 8]], output_axes="lcxyz", patch_size=[8, 8, 8]))
+    np.random.seed(0)
+    samples = [mixed[i] for i in range(32)]
+    assert {s["meta"]["volume"] for s in samples} == {"local", "url"}
+    assert all(s["img"].shape == ds[0]["img"].shape for s in samples)
+
+
+def test_url_n5_pyramid_without_s0(tmp_path):
+    """Behind a URL the levels are found by asking for s0, s1, ...; s0 may be the one missing."""
+    entry = _n5(tmp_path / "m.n5", "pixelResolution", first_level=1)
+    meta = _meta(_url(entry), "image_key")
+    assert [s.path for s in meta.scales.values()] == ["s1", "s2"]
+    assert meta == _meta(entry, "image_key")
+
+
+def test_url_n5_single_dataset(tmp_path):
+    _n5_array(tmp_path / "one", IMGS[0], {"resolution": VOXEL})
+    assert read_metadata(tmp_path.as_uri(), "one", "n5") == read_metadata(tmp_path, "one", "n5")
+
+
+def test_url_precomputed_level_opens_like_the_local_one(tmp_path):
+    entry = _precomputed(tmp_path / "p", offset=(8, 4, 0))
+    key = _meta(entry, "image_key").scales[0].path
+    store = open_store(join_path(_url(entry)["path"], "raw", key), "precomputed")
+    assert store.rank == 3 and list(store.domain.inclusive_min) == [0, 0, 0]
+    np.testing.assert_array_equal(store.read().result(), IMGS[0])
+
+
+def test_url_without_a_store_is_refused(tmp_path):
+    with pytest.raises(ValueError, match="No N5 dataset"):
+        read_metadata(tmp_path.as_uri(), "missing.n5", "n5")
+    with pytest.raises(ValueError, match="No Neuroglancer precomputed"):
+        read_metadata(tmp_path.as_uri(), "missing", "precomputed")
+
+
+def test_url_zarr_is_refused(stores):
+    """OME-NGFF zarr is read from local paths only, and a URL says so instead of failing later."""
+    with pytest.raises(ValueError, match="URL path is read for"):
+        read_metadata(Path(stores["zarr"]["path"]).as_uri(), "raw", "zarr2")
+    with pytest.raises(ValueError, match="URL path is read for"):
+        _dataset(_url(stores["zarr"]), resolutions=[[8, 8, 8]])
 
 
 # --- config ---------------------------------------------------------------------------------------
