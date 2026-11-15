@@ -218,7 +218,9 @@ class VolumeConfig(BaseModel):
 
     @model_validator(mode="after")
     def validate_format(self) -> "VolumeConfig":
-        if self.format is not None and "zarr_version" in self.model_fields_set:
+        # A dump writes zarr_version's default, and a config must load from its own dump (mia-train
+        # expands a config that way), so only a zarr_version other than the default is refused.
+        if self.format is not None and self.zarr_version != "zarr2":
             raise ValueError(
                 f"Volume {self.name!r}: zarr_version applies to zarr stores only, and this "
                 f"volume is format {self.format!r}"
