@@ -369,6 +369,16 @@ def test_format_is_optional_and_names_the_store_format():
         VolumeConfig(**vol, format="hdf5")
 
 
+def test_a_volume_with_a_format_loads_from_its_own_dump():
+    """A dump writes every field, zarr_version's default included, and must load again: mia-train
+    expands a config by dumping it and loading the dump."""
+    cfg = MiaoConfig(volumes=[{"name": "v", "path": "/x", "image_key": "raw", "format": "n5"}],
+                     resolutions=[[8, 8, 8]], output_axes="lcxyz", patch_size=[8, 8, 8])
+    for dump in (cfg.model_dump(), cfg.model_dump(mode="json")):
+        assert dump["volumes"][0]["zarr_version"] == "zarr2"
+        assert MiaoConfig(**dump).volumes[0].store_format == "n5"
+
+
 def test_a_zarr_volume_is_saved_without_a_format_key(stores):
     cfg = MiaoConfig(volumes=[{"name": "v", **stores["zarr"]}], resolutions=[[8, 8, 8]],
                      output_axes="lcxyz", patch_size=[8, 8, 8])
