@@ -107,6 +107,40 @@ Level selection, read extents, `pixel_size` and `meta["resolutions"]` are all in
 which is what lets one `resolutions` list mix expanded and unexpanded volumes. `bounding_box` and
 `meta["coordinate"]` are level-0 voxel *indices*, so `exp_factor` does not affect them.
 
+### N5 and Neuroglancer precomputed stores
+
+A volume can also be an N5 multiscale group or a Neuroglancer precomputed volume, read through
+tensorstore like zarr. Set `format` (and leave out `zarr_version`):
+
+```yaml
+volumes:
+  - name: fafb
+    path: /groups/futusa/futusa/projects/fafb/v14_align_tps_20170818_dmg.n5
+    image_key: volumes/raw           # the multiscale group holding s0, s1, ...
+    format: n5
+  - name: optic_lobe
+    path: /nrs/flyem/optic-lobe      # the directory holding both volumes
+    image_key: optic-lobe-grayscale  # a precomputed volume: a directory with an `info` file
+    label_key: optic-lobe-precomputed-seg-v1.1
+    format: precomputed
+```
+
+Neither format records voxel sizes the way OME-NGFF does, so miao reads them as the tools that
+write them do (all in nm):
+
+- **N5**: a level's voxel size is a base voxel size times its downsampling factors. The base is the
+  group's `pixelResolution` (n5-viewer, render) or `resolution`, else the first level's, and the
+  factors are the level's `downsamplingFactors`, else the group's `scales` entry. Without
+  factors, a level's own `resolution` is used. A pyramid may start at `s1`. Dimensions are x, y, z
+  in the order N5 lists them, unless the group names them in `axes`. A non-zero `offset` is refused.
+- **Precomputed**: each level's `resolution`, `size` and `voxel_offset` come from the volume's
+  `info` file. Axes are x, y, z; the channel dimension is dropped when there is one channel and is
+  axis `c` otherwise.
+
+Both are assumed to be built by block averaging, so level k's translation is half the difference
+between its voxel size and level 0's, plus its offset: the per-level convention most OME-NGFF
+pyramids record.
+
 ### Random resolution sampling
 
 To train resolution-agnostic models, let each sample draw its own scales. Set
@@ -448,11 +482,12 @@ dimensions are picked up automatically when present. Unknown keys are rejected, 
 | Field | Default | Description |
 |---|---|---|
 | `name` | — | Unique name for the volume |
-| `path` | — | Path to the OME-NGFF zarr container |
+| `path` | — | Path to the OME-NGFF zarr container (an N5 container, or the directory holding precomputed volumes) |
 | `image_key` | — | Group key within the zarr for image data |
 | `label_key` | `None` | Optional group key for labels in the same zarr |
 | `label_fill` | `None` | Set this (e.g. `-1`) to sample patches larger than the label array: the image is read around the labels, and label voxels outside the label array take this value. The patch center always lies inside the label array, and `bounding_box` still confines the read.  When unset (default), every patch must fit inside the label array |
 | `zarr_version` | `"zarr2"` | `"zarr2"` or `"zarr3"` |
+| `format` | `None` | `"n5"` or `"precomputed"` for a store that is not OME-NGFF zarr — see [N5 and Neuroglancer precomputed stores](#n5-and-neuroglancer-precomputed-stores) |
 | `weight` | `1.0` | Sampling weight; multiplies the size term, so `p ∝ weight * size ** size_weighting_exponent` |
 | `exp_factor` | `1.0` | Divides the zarr's metadata voxel size to give the effective one, before level selection — see [Effective voxel sizes](#effective-voxel-sizes) |
 | `resolutions` / `resolution_sampling` | — | Per-volume override of the global setting; set at most one |
